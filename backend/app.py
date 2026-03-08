@@ -1,13 +1,13 @@
 import io
 import math
 from typing import Any, Dict, Optional
+from functools import lru_cache
 
 import numpy as np
 from fastapi import FastAPI, File, Request, UploadFile, HTTPException
 from pydantic import BaseModel
 
 from cache import set_cached_result
-from detectors import detect_audio, detect_text, detect_video, detect_image
 from explainability.engine import ExplainabilityEngine
 from rate_limit import check_rate_limit
 from sightengine_client import detect_image_sightengine
@@ -19,6 +19,13 @@ MAX_TEXT_CHARS = 4000
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_VIDEO_BYTES = 80 * 1024 * 1024
+
+
+@lru_cache(maxsize=1)
+def _detectors_module():
+    # Lazy import prevents heavy model loading during startup.
+    import detectors
+    return detectors
 
 
 def clean_for_json(obj: Any) -> Any:
@@ -151,7 +158,7 @@ def detect_text_api(req: TextRequest, mode: str = "accurate") -> Dict[str, Any]:
                 error=f"Text too long. Maximum {MAX_TEXT_CHARS} characters allowed.",
                 mode=mode,
             )
-        raw_result = detect_text(req.text, mode=mode)
+        raw_result = _detectors_module().detect_text(req.text, mode=mode)
         if "error" in raw_result:
             return _normalize_response(
                 "text",
@@ -182,7 +189,7 @@ async def detect_image_api(file: UploadFile = File(...), mode: str = "accurate")
         if "error" in detector_result:
             if str(mode).lower() == "accurate":
                 try:
-                    local_result = detect_image(io.BytesIO(image_bytes))
+                    local_result = _detectors_module().detect_image(io.BytesIO(image_bytes))
                     local_result["method"] = "Local fallback (accurate)"
                     return _normalize_response("image", local_result, success=True, mode=mode)
                 except Exception:
@@ -200,7 +207,7 @@ async def detect_image_api(file: UploadFile = File(...), mode: str = "accurate")
         # Accurate mode: blend external + local model when confidence is borderline.
         if str(mode).lower() == "accurate" and 0.35 <= ai_score <= 0.75:
             try:
-                local_result = detect_image(io.BytesIO(image_bytes))
+                local_result = _detectors_module().detect_image(io.BytesIO(image_bytes))
                 local_ai = _to_float(local_result.get("ai_probability", 50.0), 50.0) / 100.0
                 ai_score = (ai_score * 0.7) + (local_ai * 0.3)
             except Exception:
@@ -234,7 +241,7 @@ async def detect_audio_api(file: UploadFile = File(...), mode: str = "accurate")
                 error=f"Audio too large. Maximum {MAX_AUDIO_BYTES // (1024 * 1024)} MB allowed.",
                 mode=mode,
             )
-        raw_result = detect_audio(contents, mode=mode)
+        raw_result = _detectors_module().detect_audio(contents, mode=mode)
         if "error" in raw_result:
             return _normalize_response(
                 "audio",
@@ -259,7 +266,7 @@ async def detect_video_api(file: UploadFile = File(...), mode: str = "accurate")
                 error=f"Video too large. Maximum {MAX_VIDEO_BYTES // (1024 * 1024)} MB allowed.",
                 mode=mode,
             )
-        raw_result = detect_video(io.BytesIO(contents), mode=mode)
+        raw_result = _detectors_module().detect_video(io.BytesIO(contents), mode=mode)
         if "error" in raw_result:
             return _normalize_response(
                 "video",

@@ -2,9 +2,10 @@ fastapi
 uvicorn[standard]
 
 # AI / ML
-torch
-transformers
-numpy
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
+transformers==4.41.2
+numpy<2.0
 librosa
 
 # Image / video
