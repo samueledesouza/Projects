@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+
+# AI / ML
+torch
+transformers
+numpy
+librosa
+
+# Image / video
+pillow
+opencv-python-headless
+
+# API + uploads
+python-multipart
+requests
+python-dotenv
