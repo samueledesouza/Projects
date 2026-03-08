@@ -7,6 +7,7 @@ import 'history_screen.dart';
 import 'statistics_screen.dart';
 import '../widgets/theme_toggle_button.dart';
 import '../core/scan_mode_controller.dart';
+import '../services/api_warmup_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -28,6 +29,9 @@ class _HomeScreenState extends State<HomeScreen>
       vsync: this,
       duration: const Duration(seconds: 8),
     )..repeat(reverse: true);
+
+    // Warm up backend so first real scan is less likely to timeout.
+    ApiWarmupService.warmup();
   }
 
   @override
