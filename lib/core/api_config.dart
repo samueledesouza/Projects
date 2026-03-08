@@ -1,5 +1,5 @@
 class ApiConfig {
-  static const String _defaultBaseUrl = 'http://192.168.1.106:8000';
+  static const String _defaultBaseUrl = 'https://detectify-ai-api.onrender.com';
   static const String _envBaseUrl =
       String.fromEnvironment('API_BASE_URL', defaultValue: _defaultBaseUrl);
 
