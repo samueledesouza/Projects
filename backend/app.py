@@ -1,5 +1,6 @@
 import io
 import math
+import os
 from typing import Any, Dict, Optional
 from functools import lru_cache
 
@@ -11,6 +12,7 @@ from cache import set_cached_result
 from explainability.engine import ExplainabilityEngine
 from rate_limit import check_rate_limit
 from sightengine_client import detect_image_sightengine
+from sapling_client import detect_text_sapling
 
 
 app = FastAPI(title="Detectify AI API")
@@ -26,6 +28,10 @@ def _detectors_module():
     # Lazy import prevents heavy model loading during startup.
     import detectors
     return detectors
+
+
+def _local_models_enabled() -> bool:
+    return str(os.getenv("DISABLE_LOCAL_MODELS", "")).lower() not in {"1", "true", "yes"}
 
 
 def clean_for_json(obj: Any) -> Any:
@@ -158,6 +164,20 @@ def detect_text_api(req: TextRequest, mode: str = "accurate") -> Dict[str, Any]:
                 error=f"Text too long. Maximum {MAX_TEXT_CHARS} characters allowed.",
                 mode=mode,
             )
+        if not _local_models_enabled():
+            sapling = detect_text_sapling(req.text)
+            if "error" not in sapling:
+                return _normalize_response("text", sapling, success=True, mode=mode)
+            fallback = {
+                "label": "Analysis limited (no local model)",
+                "ai_probability": 50.0,
+                "human_probability": 50.0,
+                "confidence": "Mixed signals",
+                "method": "Fallback (local models disabled)",
+                "error": sapling.get("error", "Local models disabled")
+            }
+            return _normalize_response("text", fallback, success=True, mode=mode)
+
         raw_result = _detectors_module().detect_text(req.text, mode=mode)
         if "error" in raw_result:
             return _normalize_response(
@@ -189,9 +209,10 @@ async def detect_image_api(file: UploadFile = File(...), mode: str = "accurate")
         if "error" in detector_result:
             if str(mode).lower() == "accurate":
                 try:
-                    local_result = _detectors_module().detect_image(io.BytesIO(image_bytes))
-                    local_result["method"] = "Local fallback (accurate)"
-                    return _normalize_response("image", local_result, success=True, mode=mode)
+                    if _local_models_enabled():
+                        local_result = _detectors_module().detect_image(io.BytesIO(image_bytes))
+                        local_result["method"] = "Local fallback (accurate)"
+                        return _normalize_response("image", local_result, success=True, mode=mode)
                 except Exception:
                     pass
             return _normalize_response(
@@ -205,7 +226,7 @@ async def detect_image_api(file: UploadFile = File(...), mode: str = "accurate")
         ai_score = _to_float(detector_result.get("ai_score", 0.0), 0.0)
 
         # Accurate mode: blend external + local model when confidence is borderline.
-        if str(mode).lower() == "accurate" and 0.35 <= ai_score <= 0.75:
+        if str(mode).lower() == "accurate" and 0.35 <= ai_score <= 0.75 and _local_models_enabled():
             try:
                 local_result = _detectors_module().detect_image(io.BytesIO(image_bytes))
                 local_ai = _to_float(local_result.get("ai_probability", 50.0), 50.0) / 100.0
@@ -241,6 +262,16 @@ async def detect_audio_api(file: UploadFile = File(...), mode: str = "accurate")
                 error=f"Audio too large. Maximum {MAX_AUDIO_BYTES // (1024 * 1024)} MB allowed.",
                 mode=mode,
             )
+        if not _local_models_enabled():
+            fallback = {
+                "label": "Analysis limited (no local model)",
+                "ai_probability": 50.0,
+                "human_probability": 50.0,
+                "confidence": "Mixed signals",
+                "method": "Fallback (local models disabled)",
+            }
+            return _normalize_response("audio", fallback, success=True, mode=mode)
+
         raw_result = _detectors_module().detect_audio(contents, mode=mode)
         if "error" in raw_result:
             return _normalize_response(

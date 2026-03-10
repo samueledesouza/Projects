@@ -10,7 +10,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.10
+      - key: DISABLE_LOCAL_MODELS
+        value: 1
       - key: SIGHTENGINE_API_USER
         sync: false
       - key: SIGHTENGINE_API_SECRET
+        sync: false
+      - key: SAPLING_API_KEY
         sync: false

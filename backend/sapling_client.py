@@ -3,7 +3,7 @@ import requests
 
 
 SAPLING_API_URL = "https://api.sapling.ai/api/v1/aidetect"
-SAPLING_API_KEY = os.getenv("K6O65E6DC1WC8B7S13P3BJ14518NR6SH")
+SAPLING_API_KEY = os.getenv("SAPLING_API_KEY")
 
 
 def detect_text_sapling(text: str):

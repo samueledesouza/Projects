@@ -1,23 +1,14 @@
-import torch
-import torch.nn.functional as F
-import numpy as np
-import tempfile
 import os
+import tempfile
+import io
+import numpy as np
 import cv2
 import librosa
-import io
+import torch
+import torch.nn.functional as F
 from PIL import Image
+from functools import lru_cache
 from sightengine_client import detect_image_sightengine
-
-from transformers import (
-    AutoTokenizer,
-    AutoModelForSequenceClassification,
-    GPT2TokenizerFast,
-    GPT2LMHeadModel,
-    AutoFeatureExtractor,
-    AutoModelForAudioClassification,
-    pipeline
-)
 
 # =====================================================
 # Motion Consistency score
@@ -75,17 +66,16 @@ def extract_motion_vectors(video_path):
 # DEVICE (CPU / CUDA / Apple Metal)
 # =====================================================
 
-if torch.cuda.is_available():
-    device = "cuda"
-    device_id = 0
+def _local_models_enabled() -> bool:
+    return str(os.getenv("DISABLE_LOCAL_MODELS", "")).lower() not in {"1", "true", "yes"}
 
-elif torch.backends.mps.is_available():
-    device = "mps"
-    device_id = -1
 
-else:
-    device = "cpu"
-    device_id = -1
+def _device_info():
+    if torch.cuda.is_available():
+        return "cuda", 0
+    if torch.backends.mps.is_available():
+        return "mps", -1
+    return "cpu", -1
 # =====================================================
 # TEXT MODELS
 # =====================================================
@@ -93,39 +83,65 @@ else:
 TEXT_MODEL = "Hello-SimpleAI/chatgpt-detector-roberta"
 PPL_MODEL = "distilgpt2"
 
-text_tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL)
-text_model = AutoModelForSequenceClassification.from_pretrained(TEXT_MODEL).to(device)
-text_model.eval()
-
-ppl_tokenizer = GPT2TokenizerFast.from_pretrained(PPL_MODEL)
-ppl_model = GPT2LMHeadModel.from_pretrained(PPL_MODEL).to(device)
-ppl_model.eval()
-
 # =====================================================
 # AUDIO MODEL
 # =====================================================
 
 AUDIO_MODEL = "garystafford/wav2vec2-deepfake-voice-detector"
 
-audio_feature_extractor = AutoFeatureExtractor.from_pretrained(AUDIO_MODEL)
-audio_model = AutoModelForAudioClassification.from_pretrained(AUDIO_MODEL).to(device)
-audio_model.eval()
-
 # =====================================================
 # IMAGE MODELS
 # =====================================================
 
-sdxl_detector = pipeline(
-    "image-classification",
-    model="Organika/sdxl-detector",
-    device=device
-)
+@lru_cache(maxsize=1)
+def _text_models():
+    if not _local_models_enabled():
+        raise RuntimeError("Local models disabled")
+    from transformers import (
+        AutoTokenizer,
+        AutoModelForSequenceClassification,
+        GPT2TokenizerFast,
+        GPT2LMHeadModel,
+    )
+    device, _ = _device_info()
+    text_tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL)
+    text_model = AutoModelForSequenceClassification.from_pretrained(TEXT_MODEL).to(device)
+    text_model.eval()
+    ppl_tokenizer = GPT2TokenizerFast.from_pretrained(PPL_MODEL)
+    ppl_model = GPT2LMHeadModel.from_pretrained(PPL_MODEL).to(device)
+    ppl_model.eval()
+    return text_tokenizer, text_model, ppl_tokenizer, ppl_model, device
 
-deepfake_detector = pipeline(
-    "image-classification",
-    model="dima806/deepfake_vs_real_image_detection",
-    device=device
-)
+
+@lru_cache(maxsize=1)
+def _audio_models():
+    if not _local_models_enabled():
+        raise RuntimeError("Local models disabled")
+    from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
+    device, _ = _device_info()
+    audio_feature_extractor = AutoFeatureExtractor.from_pretrained(AUDIO_MODEL)
+    audio_model = AutoModelForAudioClassification.from_pretrained(AUDIO_MODEL).to(device)
+    audio_model.eval()
+    return audio_feature_extractor, audio_model, device
+
+
+@lru_cache(maxsize=1)
+def _image_models():
+    if not _local_models_enabled():
+        raise RuntimeError("Local models disabled")
+    from transformers import pipeline
+    device, device_id = _device_info()
+    sdxl_detector = pipeline(
+        "image-classification",
+        model="Organika/sdxl-detector",
+        device=device_id
+    )
+    deepfake_detector = pipeline(
+        "image-classification",
+        model="dima806/deepfake_vs_real_image_detection",
+        device=device_id
+    )
+    return sdxl_detector, deepfake_detector, device
 
 # =====================================================
 # GLOBAL FACE DETECTOR
@@ -158,6 +174,11 @@ def confidence_tier(score):
 
 def detect_text(text, mode="accurate"):
 
+    if not _local_models_enabled():
+        return {
+            "error": "Local text model disabled"
+        }
+
     chosen_mode = "fast" if str(mode).lower() == "fast" else "accurate"
 
     if not text.strip():
@@ -168,6 +189,8 @@ def detect_text(text, mode="accurate"):
         }
 
     max_len = 256 if chosen_mode == "fast" else 512
+
+    text_tokenizer, text_model, ppl_tokenizer, ppl_model, device = _text_models()
 
     inputs = text_tokenizer(
         text,
@@ -228,6 +251,13 @@ def detect_text(text, mode="accurate"):
 
 def detect_image(image_bytes):
 
+    if not _local_models_enabled():
+        return {
+            "error": "Local image model disabled"
+        }
+
+    sdxl_detector, deepfake_detector, _ = _image_models()
+
     image = Image.open(image_bytes).convert("RGB")
 
     result1 = sdxl_detector(image)[0]
@@ -260,6 +290,13 @@ def detect_image(image_bytes):
 # =====================================================
 
 def detect_audio(audio_bytes, mode="accurate"):
+
+    if not _local_models_enabled():
+        return {
+            "error": "Local audio model disabled"
+        }
+
+    audio_feature_extractor, audio_model, device = _audio_models()
 
     chosen_mode = "fast" if str(mode).lower() == "fast" else "accurate"
 
@@ -462,6 +499,11 @@ def _soften_towards_neutral(score, factor=0.7):
 
 def diffusion_detector(frames):
 
+    if not _local_models_enabled():
+        return 0.5
+
+    sdxl_detector, _, _ = _image_models()
+
     scores = []
 
     for frame in frames:
@@ -508,6 +550,11 @@ def _label_to_ai_score(label: str, raw_score: float) -> float:
 
 
 def deepfake_frame_detector(frames):
+
+    if not _local_models_enabled():
+        return 0.5
+
+    _, deepfake_detector, _ = _image_models()
 
     scores = []
 
